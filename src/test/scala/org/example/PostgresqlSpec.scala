@@ -28,8 +28,9 @@ class PostgresqlSpec extends AnyFlatSpec with TestContainerForAll {
       .option("user", postgresServer.username)
       .option("password", postgresServer.password)
       .option("tableName", testTableName)
+      .option("partitionSize", 10)
       .load()
-      .show()
+      .show(60)
 
     spark.stop()
   }
@@ -84,7 +85,7 @@ class PostgresqlSpec extends AnyFlatSpec with TestContainerForAll {
   object Queries {
     lazy val createTableQuery = s"CREATE TABLE $testTableName (user_id BIGINT PRIMARY KEY);"
 
-    lazy val testValues: String = (1 to 50).map(i => s"($i)").mkString(", ")
+    lazy val testValues: String = (1 to 59).map(i => s"($i)").mkString(", ")
 
     lazy val insertDataQuery = s"INSERT INTO $testTableName VALUES $testValues;"
   }

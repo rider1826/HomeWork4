@@ -40,39 +40,69 @@ object PostgresTable {
   val schema: StructType = new StructType().add("user_id", LongType)
 }
 
-case class ConnectionProperties(url: String, user: String, password: String, tableName: String)
+case class ConnectionProperties(url: String, user: String, password: String, tableName: String, partitionSize: String)
 
 /** Read */
 
 class PostgresScanBuilder(options: CaseInsensitiveStringMap) extends ScanBuilder {
   override def build(): Scan = new PostgresScan(ConnectionProperties(
-    options.get("url"), options.get("user"), options.get("password"), options.get("tableName")
+    options.get("url"), options.get("user"), options.get("password"), options.get("tableName"), options.get("partitionSize")
   ))
 }
 
-class PostgresPartition extends InputPartition
+case class PostgresPartition(positionStartPartition: Long) extends InputPartition
 
 class PostgresScan(connectionProperties: ConnectionProperties) extends Scan with Batch {
   override def readSchema(): StructType = PostgresTable.schema
 
   override def toBatch: Batch = this
 
-  override def planInputPartitions(): Array[InputPartition] = Array(new PostgresPartition)
+  override def planInputPartitions(): Array[InputPartition] = {
+    val tableSize = getRecordCount()
+    val partitionSize = connectionProperties.partitionSize.toInt
+    val partitionCount = Math.ceil(tableSize / partitionSize.toDouble).toInt
+    val partitionArray = new Array[InputPartition](partitionCount)
+
+    for( i <- 0 until partitionCount) partitionArray(i) = PostgresPartition(partitionSize * i)
+    /*println("tableSize = " + tableSize)
+    println("partitionSize = " + partitionSize)
+    println("partitionCount = " + partitionCount)
+    println("inputPartitions = " + partitionArray.length)*/
+    partitionArray
+  }
 
   override def createReaderFactory(): PartitionReaderFactory = new PostgresPartitionReaderFactory(connectionProperties)
+
+  def getRecordCount() = {
+    val statement = DriverManager
+      .getConnection(connectionProperties.url, connectionProperties.user, connectionProperties.password)
+      .createStatement()
+    val tableName = connectionProperties.tableName
+    val recordCount = statement.executeQuery("SELECT COUNT(1) FROM " + tableName)
+    recordCount.next()
+    println("recordCount = " + recordCount.getInt(1))
+    recordCount.getInt(1)
+  }
 }
 
 class PostgresPartitionReaderFactory(connectionProperties: ConnectionProperties)
   extends PartitionReaderFactory {
-  override def createReader(partition: InputPartition): PartitionReader[InternalRow] = new PostgresPartitionReader(connectionProperties)
+  override def createReader(partition: InputPartition): PartitionReader[InternalRow] =
+    new PostgresPartitionReader(connectionProperties,
+                                partition.asInstanceOf[PostgresPartition].positionStartPartition,
+                                connectionProperties.partitionSize.toLong)
+  /////////////////
 }
 
-class PostgresPartitionReader(connectionProperties: ConnectionProperties) extends PartitionReader[InternalRow] {
+class PostgresPartitionReader(connectionProperties: ConnectionProperties, positionStartPartition: Long, partitionSize: Long)
+  extends PartitionReader[InternalRow] {
+
   private val connection = DriverManager.getConnection(
     connectionProperties.url, connectionProperties.user, connectionProperties.password
   )
   private val statement = connection.createStatement()
-  private val resultSet = statement.executeQuery(s"select * from ${connectionProperties.tableName}")
+  private val resultSet = statement
+    .executeQuery(s"select * from ${connectionProperties.tableName} limit $partitionSize offset $positionStartPartition")
 
   override def next(): Boolean = resultSet.next()
 
@@ -85,7 +115,7 @@ class PostgresPartitionReader(connectionProperties: ConnectionProperties) extend
 
 class PostgresWriteBuilder(options: CaseInsensitiveStringMap) extends WriteBuilder {
   override def buildForBatch(): BatchWrite = new PostgresBatchWrite(ConnectionProperties(
-    options.get("url"), options.get("user"), options.get("password"), options.get("tableName")
+    options.get("url"), options.get("user"), options.get("password"), options.get("tableName"), options.get("partitionSize")
   ))
 }
 
